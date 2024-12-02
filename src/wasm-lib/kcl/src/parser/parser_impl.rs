@@ -1668,22 +1668,61 @@ impl TryFrom<Token> for Node<TagDeclarator> {
     type Error = KclError;
 
     fn try_from(token: Token) -> Result<Self, Self::Error> {
-        if token.token_type == TokenType::Word {
-            Ok(Node::new(
-                TagDeclarator {
-                    // We subtract 1 from the start because the tag starts with a `$`.
-                    name: token.value,
-                    digest: None,
-                },
-                token.start - 1,
-                token.end,
-                token.module_id,
-            ))
-        } else {
-            Err(KclError::Syntax(KclErrorDetails {
+        match token.token_type {
+            TokenType::Word => {
+                Ok(Node::new(
+                    TagDeclarator {
+                        // We subtract 1 from the start because the tag starts with a `$`.
+                        name: token.value,
+                        digest: None,
+                    },
+                    token.start - 1,
+                    token.end,
+                    token.module_id,
+                ))
+            }
+            TokenType::Number => Err(KclError::Syntax(KclErrorDetails {
                 source_ranges: token.as_source_ranges(),
-                message: format!("Cannot assign a tag to a reserved keyword: {}", token.value.as_str()),
-            }))
+                message: format!(
+                    "Tag names must not start with a number. Tag starts with `{}`",
+                    token.value.as_str()
+                ),
+            })),
+
+            TokenType::Brace | TokenType::Whitespace => Err(KclError::Syntax(KclErrorDetails {
+                source_ranges: token.as_source_ranges(),
+                message: format!("Tag names must not be empty",),
+            })),
+
+            TokenType::Type => Err(KclError::Syntax(KclErrorDetails {
+                source_ranges: token.as_source_ranges(),
+                message: format!(
+                    "Tag names must not be a reserved keyword. Invalid tag name is `{}`",
+                    token.value.as_str()
+                ),
+            })),
+
+            TokenType::Bang
+            | TokenType::Hash
+            | TokenType::Comma
+            | TokenType::Colon
+            | TokenType::Period
+            | TokenType::Operator
+            | TokenType::DoublePeriod
+            | TokenType::QuestionMark
+            | TokenType::BlockComment
+            | TokenType::Function
+            | TokenType::String
+            | TokenType::Dollar
+            | TokenType::Keyword
+            | TokenType::Unknown
+            | TokenType::LineComment => Err(KclError::Syntax(KclErrorDetails {
+                source_ranges: token.as_source_ranges(),
+                // this is `start with` because if most of these cases are in the middle, it ends
+                // up hitting a different error path(e.g. including a bang) or being valid(e.g. including a comment) since it will get broken up into
+                // multiple tokens
+                message: format!("Tag names must not start with a {}", token.token_type),
+            })),
         }
     }
 }
@@ -1707,7 +1746,8 @@ fn tag(i: TokenSlice) -> PResult<Node<TagDeclarator>> {
     let tag_declarator = any
         .try_map(Node::<TagDeclarator>::try_from)
         .context(expected("a tag, e.g. '$seg01' or '$line01'"))
-        .parse_next(i)?;
+        .parse_next(i)
+        .map_err(|e| e.cut())?;
     // Now that we've parsed a tag declarator, verify that it's not a stdlib
     // name.  If it is, stop backtracking.
     tag_declarator
@@ -1740,7 +1780,9 @@ fn unary_expression(i: TokenSlice) -> PResult<Node<UnaryExpression>> {
                 message: format!("{EXPECTED} but found {} which is an operator, but not a unary one (unary operators apply to just a single operand, your operator applies to two or more operands)", token.value.as_str(),),
             })),
             TokenType::Bang => Ok((UnaryOperator::Not, token)),
-            other => Err(KclError::Syntax(KclErrorDetails { source_ranges: token.as_source_ranges(), message: format!("{EXPECTED} but found {} which is {}", token.value.as_str(), other,) })),
+            other => {
+Err(KclError::Syntax(KclErrorDetails { source_ranges: token.as_source_ranges(), message: format!("{EXPECTED} but found {} which is {}", token.value.as_str(), other,) }))
+            },
         })
         .context(expected("a unary expression, e.g. -x or -3"))
         .parse_next(i)?;
@@ -2096,6 +2138,7 @@ fn fn_call(i: TokenSlice) -> PResult<Node<CallExpression>> {
     opt(whitespace).parse_next(i)?;
     let _ = terminated(open_paren, opt(whitespace)).parse_next(i)?;
     let args = arguments(i)?;
+
     if let Some(std_fn) = crate::std::get_stdlib_fn(&fn_name.name) {
         // Type check the arguments.
         for (i, spec_arg) in std_fn.args(false).iter().enumerate() {
@@ -3698,12 +3741,99 @@ let myBox = box([0,0], -3, -16, -10)
     }
 
     #[test]
-    fn test_parse_empty_tag() {
+    fn test_parse_empty_tag_brace() {
         let some_program_string = r#"startSketchOn('XY')
     |> startProfileAt([0, 0], %)
-    |> line([5, 5], %, $)
-"#;
-        assert_err(some_program_string, "Unexpected token: |>", [57, 59]);
+    |> line(%, $)
+    "#;
+        assert_err(some_program_string, "Tag names must not be empty", [69, 70]);
+    }
+    #[test]
+    fn test_parse_empty_tag_whitespace() {
+        let some_program_string = r#"startSketchOn('XY')
+    |> startProfileAt([0, 0], %)
+    |> line(%, $ ,01)
+    "#;
+        assert_err(some_program_string, "Tag names must not be empty", [69, 70]);
+    }
+    #[test]
+    fn test_parse_tag_starting_with_digit() {
+        let some_program_string = r#"
+    startSketchOn('XY')
+    |> startProfileAt([0, 0], %)
+    |> line(%, $01)"#;
+        assert_err(
+            some_program_string,
+            "Tag names must not start with a number. Tag starts with `01`",
+            [74, 76],
+        );
+    }
+    #[test]
+    fn test_parse_tag_including_digit() {
+        let some_program_string = r#"
+    startSketchOn('XY')
+    |> startProfileAt([0, 0], %)
+    |> line(%, $var01)"#;
+        assert_no_err(some_program_string);
+    }
+    #[test]
+    fn test_parse_tag_starting_with_bang() {
+        let some_program_string = r#"startSketchOn('XY')
+    |> startProfileAt([0, 0], %)
+    |> line(%, $!var,01)
+    "#;
+        assert_err(some_program_string, "Tag names must not start with a bang", [69, 70]);
+    }
+    #[test]
+    fn test_parse_tag_starting_with_dollar() {
+        let some_program_string = r#"startSketchOn('XY')
+    |> startProfileAt([0, 0], %)
+    |> line(%, $$,01)
+    "#;
+        assert_err(some_program_string, "Tag names must not start with a dollar", [69, 70]);
+    }
+    #[test]
+    fn test_parse_tag_starting_with_fn() {
+        let some_program_string = r#"startSketchOn('XY')
+    |> startProfileAt([0, 0], %)
+    |> line(%, $fn,01)
+    "#;
+        assert_err(some_program_string, "Tag names must not start with a keyword", [69, 71]);
+    }
+    #[test]
+    fn test_parse_tag_starting_with_a_comment() {
+        let some_program_string = r#"startSketchOn('XY')
+    |> startProfileAt([0, 0], %)
+    |> line(%, $//
+    ,01)
+    "#;
+        assert_err(
+            some_program_string,
+            "Tag names must not start with a lineComment",
+            [69, 71],
+        );
+    }
+
+    #[test]
+    fn test_parse_tag_starting_with_reserved_type() {
+        let some_program_string = r#"
+    startSketchOn('XY')
+    |> line(%, $sketch)
+    "#;
+        assert_err(
+            some_program_string,
+            "Tag names must not be a reserved keyword. Invalid tag name is `sketch`",
+            [41, 47],
+        );
+    }
+    #[test]
+    fn test_parse_tag_with_reserved_in_middle_works() {
+        let some_program_string = r#"
+    startSketchOn('XY')
+    |> startProfileAt([0, 0], %)
+    |> line([5, 5], %, $sketching)
+    "#;
+        assert_no_err(some_program_string);
     }
 
     #[test]

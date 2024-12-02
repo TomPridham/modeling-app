@@ -136,6 +136,7 @@ impl From<winnow::error::ParseError<&[Token], ContextError>> for ErrorKind {
         }
 
         let bad_token = &input[offset];
+
         // TODO: Add the Winnow parser context to the error.
         // See https://github.com/KittyCAD/modeling-app/issues/784
         ErrorKind::Parse(ParseError::err(
