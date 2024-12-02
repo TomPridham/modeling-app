@@ -1689,9 +1689,10 @@ impl TryFrom<Token> for Node<TagDeclarator> {
                 ),
             })),
 
-            TokenType::Brace | TokenType::Whitespace => Err(KclError::Syntax(KclErrorDetails {
+            // e.g. `line(%, $)` or `line(%, $ , 5)`
+            TokenType::Brace | TokenType::Whitespace | TokenType::Comma => Err(KclError::Syntax(KclErrorDetails {
                 source_ranges: token.as_source_ranges(),
-                message: format!("Tag names must not be empty",),
+                message: "Tag names must not be empty".to_string(),
             })),
 
             TokenType::Type => Err(KclError::Syntax(KclErrorDetails {
@@ -1704,7 +1705,6 @@ impl TryFrom<Token> for Node<TagDeclarator> {
 
             TokenType::Bang
             | TokenType::Hash
-            | TokenType::Comma
             | TokenType::Colon
             | TokenType::Period
             | TokenType::Operator
@@ -3753,6 +3753,15 @@ let myBox = box([0,0], -3, -16, -10)
         let some_program_string = r#"startSketchOn('XY')
     |> startProfileAt([0, 0], %)
     |> line(%, $ ,01)
+    "#;
+        assert_err(some_program_string, "Tag names must not be empty", [69, 70]);
+    }
+
+    #[test]
+    fn test_parse_empty_tag_comma() {
+        let some_program_string = r#"startSketchOn('XY')
+    |> startProfileAt([0, 0], %)
+    |> line(%, $,)
     "#;
         assert_err(some_program_string, "Tag names must not be empty", [69, 70]);
     }
